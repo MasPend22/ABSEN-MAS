@@ -27,6 +27,9 @@
     .scan-line{position:absolute;left:5%;right:5%;top:50%;height:2px;background:rgba(255,255,255,.9);box-shadow:0 0 10px rgba(255,255,255,.8);animation:scanline 1.8s linear infinite;pointer-events:none;z-index:6}
     @keyframes scanline{0%{transform:translateY(-55px)}50%{transform:translateY(55px)}100%{transform:translateY(-55px)}}
     .camera-select{width:100%;padding:12px;border:1px solid #d1d5db;border-radius:10px;margin-top:10px;font-size:14px;background:#fff}
+    .camera-tools{display:none;grid-template-columns:1fr auto;gap:10px;align-items:center;margin-top:10px;padding:10px;border:1px solid #e2e8f0;border-radius:10px;color:#334155}
+    .zoom-box{font-size:12px}.zoom-box input{width:100%;margin-top:7px}
+    .tool-btn{width:auto;margin:0;padding:10px 13px;background:#0f172a;color:#fff;font-size:13px}
     button{width:100%;margin-top:10px;padding:13px;border:0;border-radius:10px;background:#e2e8f0;font-size:15px;cursor:pointer}
     button.primary{background:#2563eb;color:#fff}
     button:disabled{opacity:.55;cursor:not-allowed}
@@ -48,10 +51,16 @@
         <div class="scan-line"></div>
       </div>
       <select id="cameraSelect" class="camera-select" style="display:none" aria-label="Pilih kamera"></select>
+      <div id="cameraTools" class="camera-tools">
+        <label id="zoomBox" class="zoom-box" style="display:none">Zoom kamera
+          <input id="zoomRange" type="range" min="1" max="2" step="0.1" value="1">
+        </label>
+        <button id="torchBtn" class="tool-btn" type="button" style="display:none">Nyalakan lampu</button>
+      </div>
       <button id="startBtn" class="primary" onclick="startCamera()" style="display:none">Aktifkan Kamera</button>
       <button onclick="closeScanner()">Tutup</button>
-      <div class="hint">Arahkan QR Code ke area kotak. Untuk barcode batang, posisikan seluruh garis mendatar di dalam bingkai biru. Pastikan fokus dan cahaya cukup.</div>
-      <div class="speed">QR CODE + CODE128 • PEMINDAIAN HORIZONTAL • ANTI DOUBLE-SCAN</div>
+      <div class="hint">Untuk barcode batang, masukkan seluruh garis barcode ke dalam bingkai. Dekatkan kamera sampai garis terlihat tajam, tahan stabil, dan gunakan zoom secukupnya. Hindari pantulan cahaya.</div>
+      <div class="speed">QR CODE + CODE128 • AUTOFOCUS • AREA BACA LEBAR • ANTI DOUBLE-SCAN</div>
     </div>
   </div>
 
@@ -64,14 +73,20 @@
   const statusEl = document.getElementById('status');
   const selectEl = document.getElementById('cameraSelect');
   const startBtn = document.getElementById('startBtn');
+  const cameraTools = document.getElementById('cameraTools');
+  const zoomBox = document.getElementById('zoomBox');
+  const zoomRange = document.getElementById('zoomRange');
+  const torchBtn = document.getElementById('torchBtn');
 
   let scanner = null;
+  let activeTrack = null;
+  let torchOn = false;
   let done = false;
   let permissionStream = null;
   let lastCode = '';
   let lastScanAt = 0;
 
-  const SCAN_FPS = 15;
+  const SCAN_FPS = 20;
   const COOLDOWN_MS = 1400;
 
   const formats = window.Html5QrcodeSupportedFormats ? [
@@ -152,11 +167,82 @@
       // Bingkai landscape: lebar besar untuk CODE128, tetap cukup tinggi
       // agar QR Code juga dapat dipindai.
       qrbox: function(viewfinderWidth, viewfinderHeight){
-        const width = Math.min(Math.floor(viewfinderWidth * 0.94), 520);
-        const height = Math.min(Math.floor(viewfinderHeight * 0.38), 190);
+        // Area lebar dan lebih tinggi membantu decoder membaca CODE128
+        // yang garisnya tipis atau posisinya sedikit miring.
+        const width = Math.min(Math.floor(viewfinderWidth * 0.98), 720);
+        const height = Math.min(Math.floor(viewfinderHeight * 0.56), 300);
         return {width: width, height: height};
       }
     };
+  }
+
+
+  async function configureCameraTrack(){
+    activeTrack = null;
+    const video = document.querySelector('#reader video');
+    const track = video && video.srcObject && video.srcObject.getVideoTracks
+      ? video.srcObject.getVideoTracks()[0] : null;
+    if(!track) return;
+
+    activeTrack = track;
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    const advanced = [];
+
+    // Prioritaskan autofocus kontinu bila kamera mendukungnya.
+    if(caps.focusMode && caps.focusMode.includes('continuous')){
+      advanced.push({focusMode:'continuous'});
+    }
+    if(caps.exposureMode && caps.exposureMode.includes('continuous')){
+      advanced.push({exposureMode:'continuous'});
+    }
+    if(caps.whiteBalanceMode && caps.whiteBalanceMode.includes('continuous')){
+      advanced.push({whiteBalanceMode:'continuous'});
+    }
+    if(advanced.length){
+      try{ await track.applyConstraints({advanced:advanced}); }catch(e){}
+    }
+
+    cameraTools.style.display = 'grid';
+    if(caps.zoom){
+      const min = Number(caps.zoom.min || 1);
+      const max = Number(caps.zoom.max || 1);
+      const step = Number(caps.zoom.step || 0.1);
+      if(max > min){
+        zoomBox.style.display = 'block';
+        zoomRange.min = String(min);
+        zoomRange.max = String(max);
+        zoomRange.step = String(step);
+        zoomRange.value = String(Math.min(max, Math.max(min, 1)));
+      }
+    }
+
+    if(caps.torch){
+      torchBtn.style.display = 'block';
+      torchBtn.textContent = 'Nyalakan lampu';
+    }else{
+      torchBtn.style.display = 'none';
+    }
+  }
+
+  async function applyZoom(value){
+    if(!activeTrack || !activeTrack.applyConstraints) return;
+    try{
+      await activeTrack.applyConstraints({advanced:[{zoom:Number(value)}]});
+    }catch(e){
+      setStatus('Zoom manual tidak didukung kamera ini.','warn');
+    }
+  }
+
+  async function toggleTorch(){
+    if(!activeTrack || !activeTrack.applyConstraints) return;
+    try{
+      torchOn = !torchOn;
+      await activeTrack.applyConstraints({advanced:[{torch:torchOn}]});
+      torchBtn.textContent = torchOn ? 'Matikan lampu' : 'Nyalakan lampu';
+    }catch(e){
+      torchOn = false;
+      setStatus('Lampu kamera tidak didukung perangkat ini.','warn');
+    }
   }
 
   async function startCamera(cameraId){
@@ -191,11 +277,10 @@
       if(video){
         video.setAttribute('playsinline','true');
         video.muted = true;
-        const track = video.srcObject && video.srcObject.getVideoTracks()[0];
-        if(track && track.applyConstraints){
-          await track.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{});
-        }
       }
+      // Tunggu sebentar sampai stream video benar-benar terpasang.
+      await new Promise(resolve => setTimeout(resolve, 250));
+      await configureCameraTrack();
     }catch(e){
       console.error('Gagal mengaktifkan scanner:', e);
       setStatus(errorText(e),'err');
@@ -252,17 +337,23 @@
   selectEl.addEventListener('change', function(){
     startCamera(selectEl.value);
   });
+  zoomRange.addEventListener('input', function(){
+    applyZoom(zoomRange.value);
+  });
+  torchBtn.addEventListener('click', toggleTorch);
 
   window.startCamera = function(){
     startCamera(selectEl.value || null);
   };
 
   window.closeScanner = async function(){
+    try{ if(activeTrack) await activeTrack.applyConstraints({advanced:[{torch:false}]}); }catch(e){}
     try{ if(scanner) await scanner.stop(); }catch(e){}
     try{ window.close(); }catch(e){}
   };
 
   window.addEventListener('beforeunload', function(){
+    try{ if(activeTrack) activeTrack.applyConstraints({advanced:[{torch:false}]}); }catch(e){}
     try{ if(scanner) scanner.stop(); }catch(e){}
     stopPermissionStream();
   });
