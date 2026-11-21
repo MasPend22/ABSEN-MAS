@@ -37,7 +37,7 @@
 <body>
   <div class="box">
     <div class="head">
-      <h1>SILAK ABSEN</h1>
+      <h1>SMP IT AL-QIMMAH</h1>
       <p>Scan QR / Barcode</p>
     </div>
     <div class="body">
@@ -227,16 +227,18 @@
     };
 
     if(window.opener && !window.opener.closed){
-      window.opener.postMessage(payload, 'https://script.google.com');
-      setStatus('✓ Hasil scan dikirim ke Dashboard.','ok');
-      setTimeout(function(){ window.close(); }, 500);
+      window.opener.postMessage(payload, '*');
+      setStatus('Kode terbaca. Menunggu Dashboard menerima hasil scan...','ok');
+      // Keep the tab open briefly so user can see the result; dashboard validates
+      // origin, source window, and session token before processing.
+      setTimeout(function(){ window.close(); }, 1200);
     }else{
       const ret = params.get('return');
       if(ret){
         try{
           const returnUrl = new URL(ret, location.href);
           returnUrl.searchParams.set('scan', code);
-          if(token) returnUrl.searchParams.set('token', token);
+          if(token) returnUrl.searchParams.set('scanSession', token);
           location.href = returnUrl.toString();
         }catch(e){
           setStatus('Kode terbaca, tetapi alamat kembali tidak valid.','err');
